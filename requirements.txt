@@ -9,3 +9,7 @@ uvicorn
 speechrecognition
 aiohttp
 websockets
+fastapi
+uvicorn
+speechrecognition
+aiohttp
