@@ -1,19 +1,22 @@
-import asyncio
-import websockets
-import wave
 import os
-import speech_recognition as sr
-import socket
-import aiohttp
-import logging
+import asyncio
+import wave
 import json
+import logging
+import socket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+import speech_recognition as sr
+import aiohttp
 
 # Constants
 CHANNELS = 1
 SAMPLE_WIDTH = 2
 SAMPLE_RATE = 16000
 FILENAME = "recording.wav"
-PREDICTION_URL = "http://localhost:5000/predict" 
+PREDICTION_URL = os.getenv("PREDICTION_URL", "http://your-prediction-service-url/predict") 
+
+app = FastAPI()
 
 class AudioServer:
     def __init__(self):
@@ -32,96 +35,10 @@ class AudioServer:
         )
         self.logger = logging.getLogger(__name__)
 
-    async def handle_client(self, websocket, path):
-        self.logger.info("Client connected")
-        try:
-            async for message in websocket:
-                if isinstance(message, str):
-                    if message == "END":
-                        await self.stop_recording()
-                        transcription = await self.transcribe_audio()
-
-                        if transcription:
-                            self.temp_transcription = transcription
-                            if "trợ lý ảo" in transcription.lower():
-                                if not self.is_listening:
-                                    await self.send_message(websocket, {
-                                        "type": "response",
-                                        "message": "Xin chào"
-                                    })
-                                    self.is_listening = True 
-                            elif self.is_listening:
-                                if self.awaiting_answer:
-                                    full_query = f"{self.temp_transcription} {transcription}"
-                                    self.logger.info(f"Kết hợp câu lệnh: {full_query}")
-                                    prediction = await self.get_prediction(full_query)
-                                    self.awaiting_answer = False
-                                    self.last_question = ""
-                                else:
-                                    prediction = await self.get_prediction(transcription)
-                                
-                                self.logger.info(f"Prediction: {prediction}")
-                                if prediction:
-                                    if 'message' in prediction:
-                                        response_message = prediction['message']
-                                        await self.send_message(websocket, {
-                                            "type": "response",
-                                            "message": response_message
-                                        })
-                                        self.is_listening = False  
-                                    
-                                    elif 'question' in prediction:
-                                        response_question = prediction['question']
-                                        await self.send_message(websocket, {
-                                            "type": "question",
-                                            "message": response_question
-                                        })
-                                        self.last_question = response_question
-                                        self.awaiting_answer = True
-                                        self.temp_transcription = transcription
-                                    
-                                    else:
-                                        response = prediction
-                                        response_json = json.dumps({
-                                            "type": "prediction",
-                                            "data": response
-                                        })
-                                        self.logger.info(f"Sending response: {response_json}")
-                                        await websocket.send(response_json)
-                                        self.logger.info(f"Sent prediction to ESP32: {prediction}")
-                                        self.is_listening = False 
-                                else:
-                                    await self.send_error(websocket, "No prediction received")
-                            else:
-                                self.logger.info("No action required")
-                        else:
-                            self.logger.error("Transcription failed")
-                            await self.send_error(websocket, "Transcription failed")
-                elif isinstance(message, bytes):
-                    await self.process_audio_data(message) 
-        except websockets.exceptions.ConnectionClosed:
-            self.logger.info("Client connection closed unexpectedly")
-        except Exception as e:
-            self.logger.error(f"Error in handle_client: {str(e)}")
-            error_response = {
-                "type": "error",
-                "status": "error",
-                "message": f"Server error: {str(e)}"
-            }
-            try:
-                await websocket.send(json.dumps(error_response))
-            except:
-                pass
-        finally:
-            self.logger.info("Client disconnected")
-            await self.stop_recording()
-
     async def process_audio_data(self, data):
         if not self.recording:
             await self.start_recording()
-
         self.buffer.extend(data)
-
         if len(self.buffer) >= 4096:
             self.wav_file.writeframes(self.buffer)
             self.buffer.clear()
@@ -186,7 +103,7 @@ class AudioServer:
     async def send_message(self, websocket, message):
         try:
             message_json = json.dumps(message)
-            await websocket.send(message_json)
+            await websocket.send_text(message_json)
             self.logger.info(f"Sent message to client: {message_json}")
         except Exception as e:
             self.logger.error(f"Error sending message to client: {e}")
@@ -199,17 +116,101 @@ class AudioServer:
         }
         await self.send_message(websocket, error_response)
 
-async def main():
-    server = AudioServer()
-    hostname = socket.gethostname()
-    ip_address = socket.gethostbyname(hostname)
+audio_server = AudioServer()
 
-    print(f"Server IP address: {ip_address}")
-    print("Server started")
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    audio_server.logger.info("Client connected")
+    try:
+        while True:
+            message = await websocket.receive()
+            if isinstance(message, str):
+                if message == "END":
+                    await audio_server.stop_recording()
+                    transcription = await audio_server.transcribe_audio()
 
-    PORT = int(os.environ.get("PORT", 7777))
-    async with websockets.serve(server.handle_client, "0.0.0.0", PORT):  
-        await asyncio.Future() 
+                    if transcription:
+                        audio_server.temp_transcription = transcription
+                        if "trợ lý ảo" in transcription.lower():
+                            if not audio_server.is_listening:
+                                await audio_server.send_message(websocket, {
+                                    "type": "response",
+                                    "message": "Xin chào"
+                                })
+                                audio_server.is_listening = True 
+                        elif audio_server.is_listening:
+                            if audio_server.awaiting_answer:
+                                full_query = f"{audio_server.temp_transcription} {transcription}"
+                                audio_server.logger.info(f"Kết hợp câu lệnh: {full_query}")
+                                prediction = await audio_server.get_prediction(full_query)
+                                audio_server.awaiting_answer = False
+                                audio_server.last_question = ""
+                            else:
+                                prediction = await audio_server.get_prediction(transcription)
+                            
+                            audio_server.logger.info(f"Prediction: {prediction}")
+                            if prediction:
+                                if 'message' in prediction:
+                                    response_message = prediction['message']
+                                    await audio_server.send_message(websocket, {
+                                        "type": "response",
+                                        "message": response_message
+                                    })
+                                    audio_server.is_listening = False  
+                                
+                                elif 'question' in prediction:
+                                    response_question = prediction['question']
+                                    await audio_server.send_message(websocket, {
+                                        "type": "question",
+                                        "message": response_question
+                                    })
+                                    audio_server.last_question = response_question
+                                    audio_server.awaiting_answer = True
+                                    audio_server.temp_transcription = transcription
+                                
+                                else:
+                                    response = prediction
+                                    response_json = json.dumps({
+                                        "type": "prediction",
+                                        "data": response
+                                    })
+                                    audio_server.logger.info(f"Sending response: {response_json}")
+                                    await websocket.send_text(response_json)
+                                    audio_server.logger.info(f"Sent prediction to ESP32: {prediction}")
+                                    audio_server.is_listening = False 
+                            else:
+                                await audio_server.send_error(websocket, "No prediction received")
+                        else:
+                            audio_server.logger.info("No action required")
+                    else:
+                        audio_server.logger.error("Transcription failed")
+                        await audio_server.send_error(websocket, "Transcription failed")
+            elif isinstance(message, bytes):
+                await audio_server.process_audio_data(message)
+    except WebSocketDisconnect:
+        audio_server.logger.info("Client disconnected")
+        await audio_server.stop_recording()
+    except Exception as e:
+        audio_server.logger.error(f"Error in websocket_endpoint: {str(e)}")
+        error_response = {
+            "type": "error",
+            "status": "error",
+            "message": f"Server error: {str(e)}"
+        }
+        try:
+            await websocket.send_text(json.dumps(error_response))
+        except:
+            pass
+
+@app.get("/")
+async def read_root():
+    return JSONResponse(content={"message": "WebSocket server is running"})
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import uvicorn
+    hostname = socket.gethostname()
+    ip_address = socket.gethostbyname(hostname)
+    print(f"Server IP address: {ip_address}")
+    print("Server started")
+    uvicorn.run("your_script:app", host="0.0.0.0", port=int(os.environ.get("PORT", 7777)), log_level="info")

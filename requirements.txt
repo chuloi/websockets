@@ -4,3 +4,8 @@ wave
 speechrecognition
 aiohttp
 logging
+fastapi
+uvicorn
+speechrecognition
+aiohttp
+websockets
