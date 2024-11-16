@@ -1,0 +1,6 @@
+asyncio
+websockets
+wave
+speechrecognition
+aiohttp
+logging
