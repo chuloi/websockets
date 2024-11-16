@@ -213,4 +213,4 @@ if __name__ == "__main__":
     ip_address = socket.gethostbyname(hostname)
     print(f"Server IP address: {ip_address}")
     print("Server started")
-    uvicorn.run("your_script:app", host="0.0.0.0", port=int(os.environ.get("PORT", 7777)), log_level="info")
+    uvicorn.run("websoket:app", host="0.0.0.0", port=int(os.environ.get("PORT", 7777)), log_level="info")
